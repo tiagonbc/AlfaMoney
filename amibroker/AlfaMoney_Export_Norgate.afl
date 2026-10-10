@@ -1,0 +1,88 @@
+// =====================================================================================
+// AlfaMoney - export the AmiBroker / Norgate Data database to CSV for the Python
+// replications (alfamoney.data.amibroker).
+//
+// HOW TO RUN (Analysis window):
+//   1. Apply to: Filter -> Watchlist "Russell 3000 Current & Past"   (asset type = Equities)
+//                (or "S&P 500 Current & Past"; for ETFs/futures use your own watchlist)
+//   2. Range: All quotes
+//   3. Parameters: output folder + asset type, then click Explore.
+//   One CSV per symbol is written; the exploration lists one row per symbol.
+//
+// Recommended Norgate plugin settings (Norgate Data Updater > AmiBroker):
+//   - Price adjustment: Capital + Special Cash Dividends + Ordinary Dividends (total return)
+//   - Padding: whatever you use; padded bars are removed from the export anyway.
+//
+// Columns:
+//   Equities : Date,Open,High,Low,Close,Volume,UnadjClose,InSPX,InRUI,InRUA,InRUT,InNDX
+//   Other    : Date,Open,High,Low,Close,Volume,OpenInt,UnadjClose
+// =====================================================================================
+#include_once "Formulas\Norgate Data\Norgate Data Functions.afl"
+
+outDir    = ParamStr("Output folder", "C:\\AlfaMoney\\ami_export\\equities");
+assetType = ParamList("Asset type", "Equities|ETF/Other|Futures");
+fromYear  = Param("First year", 1985, 1950, 2100, 1);
+
+SetBarsRequired(sbrAll, sbrAll);
+
+function SafeName(s)
+{
+    bad = "/\\:*?\"<>|";
+    for (k = 0; k < StrLen(bad); k++)
+        s = StrReplace(s, StrMid(bad, k, 1), "_");
+    return s;
+}
+
+written = 0;
+
+if (Status("action") == actionExplore)
+{
+    fmkdir(outDir);
+    fh = fopen(outDir + "\\" + SafeName(Name()) + ".csv", "w");
+    if (fh)
+    {
+        pad = NorgatePaddingStatusTimeSeries();
+        isEq = assetType == "Equities";
+        if (assetType == "Futures")
+            unadj = C;                       // futures prices are not dividend/split adjusted
+        else
+            unadj = NorgateOriginalCloseTimeSeries();
+
+        if (isEq)
+        {
+            spx = NorgateIndexConstituentTimeSeries("$SPX");
+            rui = NorgateIndexConstituentTimeSeries("$RUI");
+            rua = NorgateIndexConstituentTimeSeries("$RUA");
+            rut = NorgateIndexConstituentTimeSeries("$RUT");
+            ndx = NorgateIndexConstituentTimeSeries("$NDX");
+            fputs("Date,Open,High,Low,Close,Volume,UnadjClose,InSPX,InRUI,InRUA,InRUT,InNDX\n", fh);
+        }
+        else
+            fputs("Date,Open,High,Low,Close,Volume,OpenInt,UnadjClose\n", fh);
+
+        yy = Year();
+        mm = Month();
+        dd = Day();
+        for (i = 0; i < BarCount; i++)
+        {
+            if (pad[i] == 1 OR yy[i] < fromYear OR IsNull(C[i]))
+                continue;
+            line = StrFormat("%04.0f-%02.0f-%02.0f,%.6f,%.6f,%.6f,%.6f,%.0f",
+                             yy[i], mm[i], dd[i], O[i], H[i], L[i], C[i], V[i]);
+            if (isEq)
+                line = line + StrFormat(",%.6f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+                                        unadj[i], spx[i], rui[i], rua[i], rut[i], ndx[i]);
+            else
+                line = line + StrFormat(",%.0f,%.6f\n", OI[i], unadj[i]);
+            fputs(line, fh);
+            written++;
+        }
+        fclose(fh);
+    }
+    else
+        _TRACE("AlfaMoney export: cannot open file for " + Name());
+}
+
+Filter = Status("lastbarinrange");
+AddTextColumn(Name(), "Symbol");
+AddColumn(written, "Bars written", 1.0);

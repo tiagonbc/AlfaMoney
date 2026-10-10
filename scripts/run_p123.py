@@ -3,6 +3,9 @@
     python scripts/run_p123.py alpha46
     python scripts/run_p123.py volume_shock
     python scripts/run_p123.py trend_factor   # needs Norgate for the signal, P123 for the test
+
+For trend_factor the Norgate prices come from the Norgate API, or from the AmiBroker
+export when ALFAMONEY_AMI_EXPORT points to it.
 """
 from __future__ import annotations
 
@@ -22,11 +25,14 @@ def main():
     elif what == "volume_shock":
         res = ps.volume_shock_bucket_test()
     elif what == "trend_factor":
-        from alfamoney.data import norgate
+        import os
+
+        from alfamoney.data import amibroker, norgate
         from alfamoney.strategies import trend_factor
         from alfamoney.strategies.common import monthly, tradable_mask
 
-        panel = norgate.load_equity_panel("Russell 3000", "1995-01-01")
+        src = amibroker if os.environ.get("ALFAMONEY_AMI_EXPORT") else norgate
+        panel = src.load_equity_panel("Russell 3000", "1995-01-01")
         mask_m = monthly(tradable_mask(panel, size_pct_cut=0.10).astype(float)).astype(bool)
         sig, _ = trend_factor.trend_signal(panel["Close"], mask_m)
         res = ps.trend_factor_via_upload(sig.dropna(how="all"), "2000-01-01")

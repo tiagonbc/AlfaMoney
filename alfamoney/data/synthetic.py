@@ -76,3 +76,53 @@ def intraday_bars(n_days: int = 500, seed: int = 2, start: str = "2022-01-03", m
                                     "Volume": rng.lognormal(8, 0.4, minutes)}, index=idx))
         px = c[-1]
     return pd.concat(frames)
+
+
+def write_amibroker_export(folder, n_assets: int = 80, n_days: int = 252 * 6, seed: int = 0) -> None:
+    """Write a fake AmiBroker/Norgate export with the exact layout produced by
+    amibroker/AlfaMoney_Export_Norgate.afl (for tests and dry runs)."""
+    from pathlib import Path
+
+    root = Path(folder)
+    eq = equity_panel(n_assets, n_days, seed)
+    (root / "equities").mkdir(parents=True, exist_ok=True)
+    for sym in eq["Close"].columns:
+        m = eq["member"][sym].astype(int)
+        df = pd.DataFrame({"Open": eq["Open"][sym], "High": eq["High"][sym], "Low": eq["Low"][sym],
+                           "Close": eq["Close"][sym], "Volume": eq["Volume"][sym].round(),
+                           "UnadjClose": eq["UnadjClose"][sym],
+                           "InSPX": m, "InRUI": m, "InRUA": m, "InRUT": 0, "InNDX": 0})
+        df.index.name = "Date"
+        df.to_csv(root / "equities" / f"{sym}.csv", float_format="%.6f")
+    fut = futures_panel(8, n_days, seed + 1, start="2015-01-02")
+    (root / "futures").mkdir(parents=True, exist_ok=True)
+    (root / "etfs").mkdir(parents=True, exist_ok=True)
+    names = ["ES", "ZN", "CL", "GC", "ZC", "6E", "ZB", "NG"]
+    for col, root_sym in zip(fut["Close"].columns, names):
+        df = pd.DataFrame({k: fut[k][col] for k in ("Open", "High", "Low", "Close", "Volume")})
+        df["OpenInt"] = 1000
+        df["UnadjClose"] = df["Close"]
+        df.index.name = "Date"
+        df.to_csv(root / "futures" / f"&{root_sym}_CCB.csv", float_format="%.6f")
+    for k, etf in enumerate(["SPY", "TLT", "GLD", "DBC", "UUP", "BIL"]):
+        col = fut["Close"].columns[k]
+        df = pd.DataFrame({f: fut[f][col] for f in ("Open", "High", "Low", "Close", "Volume")})
+        df["OpenInt"] = 0
+        df["UnadjClose"] = df["Close"]
+        df.index.name = "Date"
+        df.to_csv(root / "etfs" / f"{etf}.csv", float_format="%.6f")
+    # dated contracts for one commodity root ("ZC"), quarterly expiries
+    rng = np.random.default_rng(seed + 2)
+    dates = fut["Close"].index
+    spot = fut["Close"][fut["Close"].columns[4]].values
+    for e in pd.date_range(dates[0] + pd.Timedelta(days=40), dates[-1] + pd.Timedelta(days=200), freq="QS"):
+        code = f"ZC-{e.year}{'FGHJKMNQUVXZ'[e.month - 1]}"
+        live = (dates <= e - pd.Timedelta(days=5)) & (dates >= e - pd.Timedelta(days=400))
+        if not live.any():
+            continue
+        tau = (e - dates[live]).days / 365
+        px = spot[live] * np.exp(0.03 * tau + rng.normal(0, 0.002, live.sum()))
+        df = pd.DataFrame({"Open": px, "High": px * 1.002, "Low": px * 0.998, "Close": px,
+                           "Volume": 1000, "OpenInt": 5000, "UnadjClose": px}, index=dates[live])
+        df.index.name = "Date"
+        df.to_csv(root / "futures" / f"{code}.csv", float_format="%.6f")

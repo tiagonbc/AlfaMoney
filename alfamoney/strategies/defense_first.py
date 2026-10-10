@@ -27,10 +27,12 @@ FALLBACK, CASH = "SPY", "BIL"
 SLOTS = (0.40, 0.30, 0.20, 0.10)
 
 
-def load_norgate(start: str = "2000-01-01") -> pd.DataFrame:
-    from ..data import norgate
+def load_norgate(start: str = "2000-01-01", source=None) -> pd.DataFrame:
+    """Total-return closes from the Norgate API (default) or ``alfamoney.data.amibroker``."""
+    if source is None:
+        from ..data import norgate as source
 
-    return pd.DataFrame({s: norgate.price_frame(s, start)["Close"] for s in (*DEFENSIVE, FALLBACK, CASH)})
+    return pd.DataFrame({s: source.price_frame(s, start)["Close"] for s in (*DEFENSIVE, FALLBACK, CASH)})
 
 
 def momentum(me: pd.DataFrame) -> pd.DataFrame:
@@ -58,6 +60,8 @@ def target_weights(prices: pd.DataFrame, defensive=DEFENSIVE, fallback=FALLBACK,
 
 def run(prices: pd.DataFrame, cost_bps: float = 0.0, **kw) -> BacktestResult:
     wm = target_weights(prices, **kw)
+    if wm.empty:
+        raise ValueError("Defense First: not enough history (needs 12 months of all six series)")
     ret = prices.pct_change(fill_method=None)
     # rebalance at month-end close; weights drift-free (monthly re-set)
     w = wm.reindex(ret.index).ffill()

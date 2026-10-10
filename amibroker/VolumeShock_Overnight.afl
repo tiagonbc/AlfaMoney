@@ -1,0 +1,104 @@
+// =====================================================================================
+// Volume Shocks and Overnight Returns (Cartea, Cucuringu, Jin & Wilson 2025, SSRN 5156605)
+// Quantitativo post: "Volume Shocks and Overnight Returns".
+//
+//   VS = Volume / EMA(Volume, half-life 60)[t-1] - 1
+//   Each day: buy the top-decile VS stocks at the close, sell everything at the next open.
+//   Equal weight, long only (Quantitativo); set "Short bottom decile" for the D10-D1 spread.
+//
+// NOTE: with daily bars the full-day volume is only known after the close (the paper's
+// non-tradable version). Quantitativo uses cumulative volume to 15:45 + MOC orders.
+//
+// Run as Backtest on "Russell 3000 Current & Past". Periodicity: Daily.
+// =====================================================================================
+#include_once "Formulas\Norgate Data\Norgate Data Functions.afl"
+
+indexSym = ParamStr("Norgate index symbol", "$RUA");
+quant = Param("Top quantile (%)", 10, 1, 50, 1) / 100;
+shortBottom = ParamToggle("Short bottom decile", "No|Yes", 0);
+minPrice = Param("Min unadjusted price", 5, 0, 100, 0.5);
+minDollarVol = Param("Min 21d avg $ volume (M)", 1, 0, 100, 0.5) * 1e6;
+maxPctAdv = Param("Max position as % of ADV (0 = off)", 10, 0, 100, 1);
+hl = 60;
+
+SetTradeDelays(0, 0, 0, 0);
+SetBacktestMode(backtestRegularRaw);
+SetOption("InitialEquity", 1000000);
+SetOption("MaxOpenPositions", 10000);
+SetOption("AllowSameBarExit", True);
+if (shortBottom)
+    SetOption("AccountMargin", 50);     // short leg needs margin
+SetOption("CommissionMode", 1);
+SetOption("CommissionAmount", Param("Commission (%)", 0.01, 0, 1, 0.005));
+
+unadj = NorgateOriginalCloseTimeSeries();
+dollarVol = MA(V * unadj, 21);
+eligible = NorgateIndexConstituentTimeSeries(indexSym) AND unadj >= minPrice
+           AND dollarVol >= minDollarVol AND NorgatePaddingStatusTimeSeries() == 0;
+
+alpha = 1 - 0.5 ^ (1 / hl);
+vs = V / Ref(AMA(V, alpha), -1) - 1;
+
+Buy = eligible AND NOT IsNull(vs);
+Sell = 0;
+Short = 0;
+Cover = 0;
+BuyPrice = C;
+PositionScore = 1000 + vs;
+// ADV cap carried to the CBT through PositionSize (in dollars, positive = value)
+PositionSize = IIf(maxPctAdv > 0, maxPctAdv / 100 * dollarVol, 1e15);
+
+SetCustomBacktestProc("");
+if (Status("action") == actionPortfolio)
+{
+    bo = GetBacktesterObject();
+    bo.PreProcess();
+    for (i = 0; i < BarCount; i++)
+    {
+        // 1) everything bought at yesterday's close is sold at today's open
+        held = "";
+        for (pos = bo.GetFirstOpenPos(); pos; pos = bo.GetNextOpenPos())
+            held = held + pos.Symbol + ",";
+        for (k = 0; (s = StrExtract(held, k)) != ""; k++)
+        {
+            p = bo.FindOpenPos(s);
+            if (p)
+            {
+                px = p.GetPrice(i, "O");
+                if (IsNull(px) OR px <= 0)
+                    px = p.GetPositionValue() / Max(p.Shares, 1);
+                bo.ExitTrade(i, s, px);
+            }
+        }
+        // 2) rank today's eligible names (signals are sorted by PositionScore)
+        n = 0;
+        for (sig = bo.GetFirstSignal(i); sig; sig = bo.GetNextSignal(i))
+            if (sig.IsEntry()) n++;
+        if (n > 0)
+        {
+            nq = Max(1, int(n * quant + 0.5));
+            eq = bo.Equity;
+            legs = IIf(shortBottom, 2, 1);
+            r = 0;
+            for (sig = bo.GetFirstSignal(i); sig; sig = bo.GetNextSignal(i))
+            {
+                if (NOT sig.IsEntry())
+                    continue;
+                value = Min(eq / nq / legs, sig.PosSize);
+                if (r < nq)
+                    bo.EnterTrade(i, sig.Symbol, True, sig.Price, value);
+                else
+                    if (shortBottom AND r >= n - nq)
+                        bo.EnterTrade(i, sig.Symbol, False, sig.Price, value);
+                r++;
+            }
+        }
+        bo.HandleStops(i);
+        bo.UpdateStats(i, 1);
+        bo.UpdateStats(i, 2);
+    }
+    bo.PostProcess();
+}
+
+Filter = Buy AND Status("lastbarinrange");
+AddColumn(vs, "Volume shock", 1.3);

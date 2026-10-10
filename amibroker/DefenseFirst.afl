@@ -1,0 +1,79 @@
+// =====================================================================================
+// Defense First (Carlson 2025, SSRN 5334772) - Quantitativo "From Defense to Offense"
+//
+// Monthly: rank TLT, GLD, DBC, UUP by the average of their 1/3/6/12-month total
+// returns; weights 40/30/20/10%; any asset whose momentum is below BIL (cash) hands
+// its slot to SPY.  Paper: 10.9%/yr, Sharpe 0.89.  Quantitativo: Sharpe 0.95.
+//
+// Run as Backtest on a watchlist containing exactly: TLT GLD DBC UUP SPY BIL
+// (Norgate total-return adjustment recommended). Periodicity: Daily.
+// =====================================================================================
+#include_once "Formulas\Norgate Data\Norgate Data Functions.afl"
+
+AM_MODE = 1;  AM_QUANTILE = 0;  AM_GROSS_LONG = 1;  AM_GROSS_SHORT = 0;  AM_LONGONLY = True;
+AM_TOL = Param("Rebalance tolerance (% equity)", 0.5, 0, 5, 0.1) / 100;
+#include_once "Formulas\AlfaMoney\include\AlfaMoney_CBT.afl"
+
+SetTradeDelays(0, 0, 0, 0);
+SetOption("InitialEquity", 100000);
+SetOption("CommissionMode", 1);
+SetOption("CommissionAmount", Param("Commission (%)", 0.02, 0, 1, 0.01));
+
+monthEnd = Month() != Ref(Month(), 1) OR Status("lastbarinrange");
+
+function MonthlyMom(sym)
+{
+    global monthEnd;
+    c = Foreign(sym, "C");
+    c0 = ValueWhen(monthEnd, c, 1);
+    m = (c0 / ValueWhen(monthEnd, c, 2) + c0 / ValueWhen(monthEnd, c, 4)
+       + c0 / ValueWhen(monthEnd, c, 7) + c0 / ValueWhen(monthEnd, c, 13)) / 4 - 1;
+    return m;
+}
+
+mT = MonthlyMom("TLT");
+mG = MonthlyMom("GLD");
+mD = MonthlyMom("DBC");
+mU = MonthlyMom("UUP");
+mB = MonthlyMom("BIL");
+
+// rank (0 = best) of asset with momentum x among the four; ties broken by list order
+function RankOf(x, idx)
+{
+    global mT, mG, mD, mU;
+    rk = (mT > x OR (mT == x AND 0 < idx)) + (mG > x OR (mG == x AND 1 < idx))
+       + (mD > x OR (mD == x AND 2 < idx)) + (mU > x OR (mU == x AND 3 < idx));
+    return rk;
+}
+
+function Slot(rk)
+{
+    return IIf(rk == 0, 0.4, IIf(rk == 1, 0.3, IIf(rk == 2, 0.2, 0.1)));
+}
+
+sT = Slot(RankOf(mT, 0));
+sG = Slot(RankOf(mG, 1));
+sD = Slot(RankOf(mD, 2));
+sU = Slot(RankOf(mU, 3));
+
+sym = Name();
+w = 0;
+if (sym == "TLT") w = IIf(mT > mB, sT, 0);
+if (sym == "GLD") w = IIf(mG > mB, sG, 0);
+if (sym == "DBC") w = IIf(mD > mB, sD, 0);
+if (sym == "UUP") w = IIf(mU > mB, sU, 0);
+if (sym == "SPY") w = IIf(mT <= mB, sT, 0) + IIf(mG <= mB, sG, 0)
+                    + IIf(mD <= mB, sD, 0) + IIf(mU <= mB, sU, 0);
+
+ready = NOT IsNull(mT) AND NOT IsNull(mG) AND NOT IsNull(mD) AND NOT IsNull(mU) AND NOT IsNull(mB);
+Buy = monthEnd AND ready AND sym != "BIL";
+Sell = 0;
+Short = 0;
+Cover = 0;
+BuyPrice = C;
+PositionScore = 1000 + w;
+
+Filter = monthEnd AND ready;
+AddColumn(w, "Target weight", 1.3);
+AddColumn(mT, "Mom TLT", 1.4); AddColumn(mG, "Mom GLD", 1.4); AddColumn(mD, "Mom DBC", 1.4);
+AddColumn(mU, "Mom UUP", 1.4); AddColumn(mB, "Mom BIL", 1.4);

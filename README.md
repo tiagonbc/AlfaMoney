@@ -2,11 +2,12 @@
 
 Este repositório replica as estratégias dos artigos acadêmicos que o substack
 [Quantitativo](https://www.quantitativo.com) ("Quant Trading Rules") implementou entre 2024 e 2026.
-As fontes de dados são a **Norgate Data** e o **Portfolio123**, usadas onde cada uma se aplica.
+As fontes de dados são a **Norgate Data**, lida pela base do **AmiBroker** (plugin Norgate) ou pela
+API Python da Norgate, e o **Portfolio123**, usado onde se aplica.
 
 > **Status:** o código foi validado com testes e dados sintéticos (`pytest`). Ele **ainda não foi
-> executado com dados reais**. A Norgate exige o Norgate Data Updater (Windows) e o P123 exige
-> uma chave de API. Os números das tabelas abaixo são os reportados pelos artigos e pelo
+> executado com dados reais**. A Norgate exige o Norgate Data Updater (Windows), os arquivos AFL
+> precisam ser rodados no AmiBroker e o P123 exige uma chave de API. Os números das tabelas abaixo são os reportados pelos artigos e pelo
 > Quantitativo, não resultados deste código.
 
 ## Artigos replicados
@@ -59,13 +60,72 @@ As newsletters "Quantitativo weekly" resumem centenas de artigos e ficaram fora 
 | Alpha#46 | (MA3+MA6+MA12+MA24)/(4·Close), demeaned por dia, rebalanceamento diário | 17 de 191 sinais significativos | sozinho: Sharpe < 0,5 com DD 55,7%; combo de 17: Sharpe 1,15–1,76 |
 | Network momentum | 8 features, grafo de Kalofolias (ensemble de 5 janelas), Ã·X, regressão linear agrupada | Sharpe 1,51 | Sharpe ≈ 2,1 (vs 1,13 só com features próprias) |
 
+## Usando a base do AmiBroker (Norgate Data)
+
+Há dois caminhos. Os dois usam a mesma base Norgate que o AmiBroker já tem.
+
+### 1. Exportar a base do AmiBroker e rodar as 13 estratégias em Python
+
+Assim as estratégias que o AFL não comporta (ML, regressões, grafos, contratos futuros
+individuais) rodam sobre os dados da sua base do AmiBroker.
+
+1. Copie a pasta `amibroker/` para `C:\Program Files\AmiBroker\Formulas\AlfaMoney\`.
+2. No AmiBroker, abra `AlfaMoney_Export_Norgate.afl` numa janela de Analysis e configure:
+   **Range = All quotes**, **Apply to = Filter → Watchlist**. Rode **Explore** três vezes, uma
+   para cada grupo:
+
+   | Watchlist | Parâmetro *Asset type* | Pasta de saída |
+   |---|---|---|
+   | `Russell 3000 Current & Past` (ou `S&P 500 Current & Past`) | Equities | `...\ami_export\equities` |
+   | uma watchlist com SPY, TLT, GLD, DBC, UUP, BIL | ETF/Other | `...\ami_export\etfs` |
+   | uma watchlist com os futuros contínuos (`&ES_CCB`, …) e os contratos (`ZC-2024Z`, …) | Futures | `...\ami_export\futures` |
+
+   O exportador grava, para cada símbolo:
+   - OHLCV e o preço não ajustado (`NorgateOriginalCloseTimeSeries`);
+   - a participação histórica nos índices S&P 500, Russell 1000/3000/2000 e Nasdaq-100
+     (`NorgateIndexConstituentTimeSeries`);
+   - as barras com *padding* são descartadas.
+
+   Configure o ajuste de preços do plugin Norgate como *total return* antes de exportar.
+3. Rode o Python apontando para a exportação:
+
+```bash
+python scripts/run_norgate.py --all --source amibroker --ami-export C:\AlfaMoney\ami_export --cost-bps 5
+```
+
+A primeira leitura junta os CSVs num cache `_alfamoney_combined.parquet` dentro da pasta.
+
+### 2. Backtests nativos no AmiBroker (AFL)
+
+Estratégias que cabem no backtester de portfólio do AmiBroker:
+
+| Arquivo | Estratégia | Rodar em |
+|---|---|---|
+| `amibroker/Alpha46_StatArb.afl` | Alpha#46 long/short em decis, rebalanceamento diário (Modern Stat Arb) | `S&P 500 Current & Past` ou `Russell 3000 Current & Past` |
+| `amibroker/VolumeShock_Overnight.afl` | Volume shock: compra no fechamento e vende na abertura seguinte, decil topo, teto por % do ADV | `Russell 3000 Current & Past` |
+| `amibroker/DefenseFirst.afl` | Defense First: 40/30/20/10 com filtro contra BIL → SPY, rebalanceamento mensal | watchlist TLT GLD DBC UUP SPY BIL |
+| `amibroker/ThirdFriday_Spike.afl` | 3rd Friday: trade A (fechamento → abertura) ou B (abertura → fechamento) | SPY |
+
+As três primeiras usam `include/AlfaMoney_CBT.afl`, um custom backtester genérico que rebalanceia
+para pesos-alvo ou para quantis long/short. Ele também fecha posições que saem do índice ou são
+deslistadas.
+
+> Os AFL foram escritos para AmiBroker 6.x com o plugin Norgate, mas **não puderam ser executados
+> neste ambiente**. Faça um *Check* (Ctrl+F7) e compare com o resultado em Python antes de confiar
+> nos números.
+
+O Alpha#46 em AFL usa pesos iguais por perna; a versão Python pondera pelo sinal demeaned.
+
 ## Uso
 
 ```bash
 pip install -r requirements.txt
 python -m pytest -q                                  # testes com dados sintéticos
 
-# Norgate (Windows, com o NDU aberto)
+# Norgate via exportação do AmiBroker
+python scripts/run_norgate.py --all --source amibroker --ami-export C:\AlfaMoney\ami_export
+
+# Norgate via API Python (Windows, com o NDU aberto)
 python scripts/run_norgate.py --all --start 1995-01-01 --cost-bps 5
 python scripts/run_norgate.py --strategy network_momentum basis_reversal
 python scripts/run_norgate.py --strategy intraday_momentum --minute-csv NQ_1min.csv

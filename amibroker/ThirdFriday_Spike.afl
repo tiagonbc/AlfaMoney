@@ -1,0 +1,51 @@
+// =====================================================================================
+// The Derivative Payoff Bias / Third Friday Price Spike
+// (Baltussen, Terstegge & Whelan 2023, SSRN 4562800) - Quantitativo "The Derivative Payoff Bias"
+//
+//   Monthly option expiration = 3rd Friday (Thursday if that Friday is a holiday).
+//   Trade A "spike":    long at the close of the day before expiration, sell at the open.
+//   Trade B "reversal": short at the expiration-day open, cover at that day's close
+//                       (paper exits around noon - needs intraday data).
+//   SPY's 09:30 opening print is used as the proxy for the SPX Special Opening Quotation.
+//
+// Run as Backtest on SPY (Norgate). Periodicity: Daily. Pick the trade in Parameters.
+// =====================================================================================
+tradeMode = ParamList("Trade", "A: spike (close->open)|B: reversal (open->close)");
+
+SetTradeDelays(0, 0, 0, 0);
+SetOption("InitialEquity", 100000);
+SetOption("AllowSameBarExit", True);
+SetOption("MaxOpenPositions", 1);
+SetOption("CommissionMode", 1);
+SetOption("CommissionAmount", Param("Commission (%)", 0.005, 0, 1, 0.005));
+SetPositionSize(100, spsPercentOfEquity);
+
+dow = DayOfWeek();
+dom = Day();
+isThirdFri = dow == 5 AND dom >= 15 AND dom <= 21;
+// Friday holiday (e.g. Good Friday): expiration moves to Thursday; next bar is the next week
+isThuHoliday = dow == 4 AND dom >= 14 AND dom <= 20 AND Ref(dow, 1) < 4;
+isExpiry = isThirdFri OR isThuHoliday;
+
+Buy = 0;
+Sell = 0;
+Short = 0;
+Cover = 0;
+if (StrLeft(tradeMode, 1) == "A")
+{
+    Buy = Ref(isExpiry, 1);      // calendar is known in advance - not a look-ahead
+    BuyPrice = C;
+    Sell = isExpiry;
+    SellPrice = O;
+}
+else
+{
+    Short = isExpiry;
+    ShortPrice = O;
+    Cover = isExpiry;
+    CoverPrice = C;
+}
+
+Filter = isExpiry;
+AddColumn(O / Ref(C, -1) - 1, "Spike (close->open)", 1.4);
+AddColumn(-(C / O - 1), "Reversal (short open->close)", 1.4);

@@ -1,0 +1,148 @@
+// =====================================================================================
+// AlfaMoney_CBT.afl - generic target-weight / quantile rebalancing custom backtester
+//
+// Contract for the strategy formula (phase 1, per symbol):
+//   * Buy = 1 on every rebalance bar where the symbol is ELIGIBLE (universe member),
+//     including symbols whose target is zero (so held positions can be closed).
+//   * PositionScore = 1000 + value, where value is
+//       AM_MODE == 1 : the signed target weight (e.g. 0.40 = 40% long, -0.1 = 10% short)
+//       AM_MODE == 2 : a ranking score; the CBT goes long the top AM_QUANTILE fraction
+//                      and (unless AM_LONGONLY) short the bottom AM_QUANTILE fraction,
+//                      equal weight inside each leg (AM_GROSS_LONG / AM_GROSS_SHORT).
+//   * BuyPrice = execution price (normally Close with SetTradeDelays(0,0,0,0)).
+//   Positions held in symbols with no signal on a rebalance bar (left the universe,
+//   delisted) are closed at that bar's close (or their last known price).
+//
+// Define AM_MODE, AM_QUANTILE, AM_GROSS_LONG, AM_GROSS_SHORT, AM_LONGONLY, AM_TOL
+// BEFORE including this file.  Relies on the mid-level CBT signal list being sorted
+// by PositionScore (descending), which is how AmiBroker ranks signals; a warning is
+// traced if it is not.
+// =====================================================================================
+
+SetBacktestMode(backtestRegularRaw);     // keep raw signals even while in position
+SetOption("MaxOpenPositions", 10000);
+SetOption("AllowPositionShrinking", True);
+SetOption("AllowSameBarExit", True);
+SetCustomBacktestProc("");
+
+function AM_TargetWeight(mode, value, r, n, nq, gl, gs, longonly)
+{
+    w = 0;
+    if (mode == 1)
+        w = value;
+    else
+    {
+        if (r < nq)
+            w = gl / nq;
+        else
+            if (r >= n - nq AND NOT longonly)
+                w = -gs / nq;
+    }
+    return w;
+}
+
+if (Status("action") == actionPortfolio)
+{
+    bo = GetBacktesterObject();
+    bo.PreProcess();
+
+    for (i = 0; i < BarCount; i++)
+    {
+        // ---- 1) eligible symbols on this bar
+        n = 0;
+        syms = ",";
+        prevScore = 1e30;
+        for (sig = bo.GetFirstSignal(i); sig; sig = bo.GetNextSignal(i))
+        {
+            if (sig.IsEntry())
+            {
+                n++;
+                syms = syms + sig.Symbol + ",";
+                if (AM_MODE == 2 AND sig.PosScore > prevScore + 1e-9)
+                    _TRACE("AlfaMoney CBT: signals not sorted by score at bar " + i);
+                prevScore = sig.PosScore;
+            }
+        }
+
+        if (n > 0)
+        {
+            eq = bo.Equity;
+
+            // ---- 2) close positions that are no longer eligible
+            toExit = "";
+            for (pos = bo.GetFirstOpenPos(); pos; pos = bo.GetNextOpenPos())
+            {
+                if (StrFind(syms, "," + pos.Symbol + ",") == 0)
+                    toExit = toExit + pos.Symbol + ",";
+            }
+            for (k = 0; (s = StrExtract(toExit, k)) != ""; k++)
+            {
+                p = bo.FindOpenPos(s);
+                if (p)
+                {
+                    px = p.GetPrice(i, "C");
+                    if (IsNull(px) OR px <= 0)
+                        px = p.GetPositionValue() / Max(p.Shares, 1);
+                    bo.ExitTrade(i, s, px);
+                }
+            }
+
+            nq = Max(1, int(n * AM_QUANTILE + 0.5));
+
+            // ---- 3) pass 1 reduces / closes, pass 2 increases / opens (frees cash first)
+            for (pass = 1; pass <= 2; pass++)
+            {
+                r = 0;
+                for (sig = bo.GetFirstSignal(i); sig; sig = bo.GetNextSignal(i))
+                {
+                    if (NOT sig.IsEntry())
+                        continue;
+                    w = AM_TargetWeight(AM_MODE, sig.PosScore - 1000, r, n, nq,
+                                        AM_GROSS_LONG, AM_GROSS_SHORT, AM_LONGONLY);
+                    r++;
+                    target = eq * w;
+                    pos = bo.FindOpenPos(sig.Symbol);
+                    cur = 0;
+                    if (pos)
+                    {
+                        cur = pos.GetPositionValue();
+                        if (NOT pos.IsLong)
+                            cur = -cur;
+                    }
+                    if (pass == 1)
+                    {
+                        if (pos)
+                        {
+                            flip = (target > 0 AND cur < 0) OR (target < 0 AND cur > 0);
+                            if (w == 0 OR flip)
+                                bo.ExitTrade(i, sig.Symbol, sig.Price);
+                            else
+                                if (abs(target) < abs(cur) - AM_TOL * eq)
+                                    bo.ScaleTrade(i, sig.Symbol, False, sig.Price, abs(cur) - abs(target));
+                        }
+                    }
+                    else
+                    {
+                        if (w != 0)
+                        {
+                            pos = bo.FindOpenPos(sig.Symbol);
+                            if (pos)
+                            {
+                                cur = pos.GetPositionValue();
+                                if (abs(target) > cur + AM_TOL * eq)
+                                    bo.ScaleTrade(i, sig.Symbol, True, sig.Price, abs(target) - cur);
+                            }
+                            else
+                                bo.EnterTrade(i, sig.Symbol, w > 0, sig.Price, abs(target));
+                        }
+                    }
+                }
+            }
+        }
+
+        bo.HandleStops(i);
+        bo.UpdateStats(i, 1);
+        bo.UpdateStats(i, 2);
+    }
+    bo.PostProcess();
+}

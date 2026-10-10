@@ -1,0 +1,51 @@
+// =====================================================================================
+// GTJA Alpha#46 short-term reversal - Quantitativo "Modern Statistical Arbitrage"
+// (Du, Walter & Ulrich 2026, arXiv 2601.06499)
+//
+//   a46 = (MA3 + MA6 + MA12 + MA24) / (4 * Close)
+//   High a46 = price far below its blended average -> long; low a46 -> short.
+//   Daily rebalance at the close, point-in-time index membership (Norgate).
+//
+// AmiBroker version: long top AM_QUANTILE / short bottom AM_QUANTILE, equal weight per
+// leg (Python version weights by the demeaned signal - see alfamoney/strategies/stat_arb.py).
+// Quantitativo: alone Sharpe < 0.5 with a 55.7% drawdown on the S&P 500.
+//
+// Run as Backtest on watchlist "S&P 500 Current & Past" (index $SPX) or
+// "Russell 3000 Current & Past" ($RUA). Range: from 2002. Periodicity: Daily.
+// =====================================================================================
+#include_once "Formulas\Norgate Data\Norgate Data Functions.afl"
+
+AM_MODE = 2;
+AM_QUANTILE = Param("Quantile per leg (%)", 10, 1, 50, 1) / 100;
+AM_GROSS_LONG = Param("Long gross (x equity)", 0.5, 0, 2, 0.05);
+AM_GROSS_SHORT = Param("Short gross (x equity)", 0.5, 0, 2, 0.05);
+AM_LONGONLY = ParamToggle("Long only", "No|Yes", 0);
+AM_TOL = Param("Rebalance tolerance (% equity)", 0.05, 0, 2, 0.01) / 100;
+#include_once "Formulas\AlfaMoney\include\AlfaMoney_CBT.afl"
+
+indexSym = ParamStr("Norgate index symbol", "$SPX");
+minPrice = Param("Min unadjusted price", 5, 0, 100, 0.5);
+rebalEvery = Param("Rebalance every N bars", 1, 1, 21, 1);
+
+SetTradeDelays(0, 0, 0, 0);
+SetOption("InitialEquity", 1000000);
+SetOption("AccountMargin", 50);            // long-short needs margin for the short leg
+SetOption("CommissionMode", 1);
+SetOption("CommissionAmount", Param("Commission (%)", 0.01, 0, 1, 0.005));
+
+eligible = NorgateIndexConstituentTimeSeries(indexSym)
+           AND NorgateOriginalCloseTimeSeries() >= minPrice
+           AND NorgatePaddingStatusTimeSeries() == 0;
+
+a46 = (MA(C, 3) + MA(C, 6) + MA(C, 12) + MA(C, 24)) / (4 * C);
+
+rebal = (BarIndex() % rebalEvery) == 0;
+Buy = eligible AND rebal AND NOT IsNull(a46);
+Sell = 0;
+Short = 0;
+Cover = 0;
+BuyPrice = C;
+PositionScore = 1000 + a46;
+
+Filter = Buy AND Status("lastbarinrange");
+AddColumn(a46, "Alpha46", 1.4);
