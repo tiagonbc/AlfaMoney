@@ -77,12 +77,10 @@ def run(panel: dict[str, pd.DataFrame], n_quantiles: int = 5, min_price: float =
     return res
 
 
-# ------------------------------------------------------------------ Portfolio123 approximation
-# P123 cannot run the rolling cross-sectional regression natively; the practical
-# route is to compute the signal in Python and upload it as a custom stock factor
-# (see alfamoney.data.p123.upload_stock_factor), then rank on StockFactor("TrendFactor").
-# A rule-of-thumb native proxy (equal-weighted MA ratios, short lags inverted as
-# in the paper's estimated betas) is given in p123/trend_factor_ranking.xml.
+# ------------------------------------------------------------------ Portfolio123
+# P123 cannot run the rolling cross-sectional regression natively. Compute the signal
+# here and upload it as a custom stock factor (alfamoney.data.p123.upload_stock_factor),
+# then rank on StockFactor("TrendFactor") — see scripts/run_p123.py.
 
 
 def p123_signal_frame(sig: pd.DataFrame) -> pd.DataFrame:

@@ -1,0 +1,11 @@
+[project]
+name = "alfamoney"
+version = "0.1.0"
+description = "Replications of the academic papers covered by the Quantitativo newsletter (Norgate Data / Portfolio123)"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["alfamoney*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
